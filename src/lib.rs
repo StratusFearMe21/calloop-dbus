@@ -1,6 +1,6 @@
 use calloop::{
     generic::{Fd, Generic},
-    {EventSource, Interest, Mode, Poll, Readiness},
+    {EventSource, InsertError, Interest, Mode, Poll, Readiness, Source},
 };
 use dbus::{
     blocking::stdintf::org_freedesktop_dbus,
@@ -10,7 +10,7 @@ use dbus::{
     strings::BusName,
     Error, Message,
 };
-use log::trace;
+use log::{trace, debug};
 
 use std::cell::RefCell;
 use std::io;
@@ -55,6 +55,24 @@ impl DBusSource {
             filters: Default::default(),
         })
     }
+
+    /// Insert this source into the given event loop with an adapder that ether panics on orphan
+    /// events or just logs it at debug level. You probaly only what this if you set eavesdrop on a
+    /// MatchRule.
+    pub fn quick_insert<Data: 'static>(
+        self,
+        handle: calloop::LoopHandle<Data>,
+        panic_on_orphan: bool
+    ) -> Result<Source<DBusSource>, InsertError<DBusSource>> {
+        handle.insert_source(self, move |msg, _, _| {
+            if panic_on_orphan {
+                panic!("[calloop] Encountered an orphan event: {:#?}", msg,);
+            } else {
+                debug!("orphan {:#?}", msg);
+            }
+        })
+    }
+
     fn filters_mut(&self) -> std::cell::RefMut<Filters<FilterCb>> {
         self.filters.borrow_mut()
     }
@@ -98,11 +116,16 @@ impl MatchingReceiver for DBusSource {
 }
 
 impl EventSource for DBusSource {
-    type Event = ();
+    type Event = Message;
     type Metadata = ();
     type Ret = ();
 
-    fn process_events<F>(&mut self, _: Readiness, _: calloop::Token, _: F) -> io::Result<()>
+    fn process_events<F>(
+        &mut self,
+        _: Readiness,
+        _: calloop::Token,
+        mut fcallback: F,
+    ) -> io::Result<()>
     where
         F: FnMut(Self::Event, &mut Self::Metadata) -> Self::Ret,
     {
@@ -120,6 +143,8 @@ impl EventSource for DBusSource {
                 if !callback(message, &self.conn) {
                     remove = Some(*token);
                 }
+            } else {
+                fcallback(message, &mut ());
             }
             if let Some(token) = remove {
                 self.filters_mut().remove(token);
