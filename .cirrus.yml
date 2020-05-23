@@ -12,7 +12,7 @@ task:
         image_family: freebsd-13-0-snap
  # Install Rust
   setup_script:
-    - pkg install -y dbus
+    - pkg install -y dbus pkg-config
     - fetch https://sh.rustup.rs -o rustup.sh
     - sh rustup.sh -y --profile=minimal --default-toolchain stable
   test_script:
