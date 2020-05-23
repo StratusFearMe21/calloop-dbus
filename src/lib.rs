@@ -10,7 +10,7 @@ use dbus::{
     strings::BusName,
     Error, Message,
 };
-use log::{trace, debug};
+use log::{debug, trace};
 
 use std::cell::RefCell;
 use std::io;
@@ -62,7 +62,7 @@ impl DBusSource {
     pub fn quick_insert<Data: 'static>(
         self,
         handle: calloop::LoopHandle<Data>,
-        panic_on_orphan: bool
+        panic_on_orphan: bool,
     ) -> Result<Source<DBusSource>, InsertError<DBusSource>> {
         handle.insert_source(self, move |msg, _, _| {
             if panic_on_orphan {
