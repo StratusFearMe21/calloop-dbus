@@ -16,6 +16,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: System dependencies
+        run: sudo apt-get install --no-install-recommends -y libdbus-1-dev dbus at-spi2-core
+
       - name: Checkout sources
         uses: actions/checkout@v2
 
