@@ -27,9 +27,9 @@ impl<F> Filters<F> {
         id
     }
 
-    pub fn remove(&mut self, id: &Token) -> Option<(MatchRule<'static>, F)> {
+    pub fn remove(&mut self, id: Token) -> Option<(MatchRule<'static>, F)> {
         trace!("removed token {}", id.0);
-        self.list.remove(id)
+        self.list.remove(&id)
     }
 
     pub fn get_matches(

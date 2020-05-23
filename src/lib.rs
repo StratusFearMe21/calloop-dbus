@@ -93,7 +93,7 @@ impl MatchingReceiver for DBus {
     }
 
     fn stop_receive(&self, id: dbus::channel::Token) -> Option<(MatchRule<'static>, Self::F)> {
-        self.filters_mut().remove(&id)
+        self.filters_mut().remove(id)
     }
 }
 
@@ -122,7 +122,7 @@ impl EventSource for DBus {
                 }
             }
             if let Some(token) = remove {
-                self.filters_mut().remove(&token);
+                self.filters_mut().remove(token);
             }
         }
 
