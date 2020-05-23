@@ -20,13 +20,13 @@ use filters::Filters;
 
 type FilterCb = Box<dyn FnMut(Message, &Connection) -> bool + Send + 'static>;
 
-pub struct DBus {
+pub struct DBusSource {
     conn: Connection,
     watch: Generic<Fd>,
     filters: RefCell<Filters<FilterCb>>,
 }
 
-impl DBus {
+impl DBusSource {
     pub fn new(bus_type: BusType) -> io::Result<Self> {
         let mut channel = Channel::get_private(bus_type).map_err(|_| {
             io::Error::new(io::ErrorKind::ConnectionRefused, "Failed to connet to DBus")
@@ -85,7 +85,7 @@ impl DBus {
     }
 }
 
-impl MatchingReceiver for DBus {
+impl MatchingReceiver for DBusSource {
     type F = FilterCb;
 
     fn start_receive(&self, m: MatchRule<'static>, f: Self::F) -> dbus::channel::Token {
@@ -97,7 +97,7 @@ impl MatchingReceiver for DBus {
     }
 }
 
-impl EventSource for DBus {
+impl EventSource for DBusSource {
     type Event = ();
     type Metadata = ();
     type Ret = ();
