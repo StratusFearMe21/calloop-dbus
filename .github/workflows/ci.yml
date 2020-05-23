@@ -61,4 +61,13 @@ jobs:
       - name: Clippy
         run: cargo clippy -- -D warnings
 
+cargo-deny:
+    runs-on: ubuntu-latest
 
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v2
+        with:
+          submodules: recursive
+
+      - uses: EmbarkStudios/cargo-deny-action@v1
