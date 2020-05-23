@@ -64,7 +64,7 @@ jobs:
       - name: Clippy
         run: cargo clippy -- -D warnings
 
-cargo-deny:
+  cargo-deny:
     runs-on: ubuntu-latest
 
     steps:
