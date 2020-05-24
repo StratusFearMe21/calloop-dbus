@@ -4,7 +4,7 @@ use calloop::{
 };
 use dbus::{
     blocking::stdintf::org_freedesktop_dbus,
-    blocking::Connection,
+    blocking::{Connection, LocalConnection, SyncConnection},
     channel::{BusType, Channel, MatchingReceiver},
     message::MatchRule,
     strings::BusName,
@@ -12,21 +12,34 @@ use dbus::{
 };
 use log::{debug, trace};
 
-use std::cell::RefCell;
 use std::io;
 
 mod filters;
 use filters::Filters;
 
-type FilterCb = Box<dyn FnMut(Message, &Connection) -> bool + Send + 'static>;
-
 pub struct DBusSource {
     conn: Connection,
     watch: Generic<Fd>,
-    filters: RefCell<Filters<FilterCb>>,
+    filters: std::cell::RefCell<Filters<FilterCb>>,
 }
 
-impl DBusSource {
+pub struct LocalDBusSource {
+    conn: LocalConnection,
+    watch: Generic<Fd>,
+    filters: std::cell::RefCell<Filters<LocalFilterCb>>,
+}
+
+pub struct SyncDBusSource {
+    conn: SyncConnection,
+    watch: Generic<Fd>,
+    filters: std::sync::Mutex<Filters<SyncFilterCb>>,
+}
+macro_rules! sourceimpl {
+    ($s: ident, $c: ident, $cb: ident $(, $ss:tt)*) => {
+
+type $cb = Box<dyn FnMut(Message, &$c) -> bool $(+ $ss)* + 'static>;
+
+impl $s {
     pub fn new(bus_type: BusType) -> io::Result<Self> {
         let mut channel = Channel::get_private(bus_type).map_err(|_| {
             io::Error::new(io::ErrorKind::ConnectionRefused, "Failed to connet to DBus")
@@ -63,7 +76,7 @@ impl DBusSource {
         self,
         handle: calloop::LoopHandle<Data>,
         panic_on_orphan: bool,
-    ) -> Result<Source<DBusSource>, InsertError<DBusSource>> {
+    ) -> Result<Source<$s>, InsertError<$s>> {
         handle.insert_source(self, move |msg, _, _| {
             if panic_on_orphan {
                 panic!("[calloop] Encountered an orphan event: {:#?}", msg,);
@@ -71,10 +84,6 @@ impl DBusSource {
                 debug!("orphan {:#?}", msg);
             }
         })
-    }
-
-    fn filters_mut(&self) -> std::cell::RefMut<Filters<FilterCb>> {
-        self.filters.borrow_mut()
     }
 
     pub fn request_name<'a, N: Into<BusName<'a>>>(
@@ -94,7 +103,7 @@ impl DBusSource {
         f: F,
     ) -> Result<dbus::channel::Token, dbus::Error>
     where
-        F: FnMut(Message, &Connection) -> bool + Send + 'static,
+        F: FnMut(Message, &$c) -> bool $(+ $ss)* + 'static,
     {
         let token = self.start_receive(match_rule.static_clone(), Box::new(f));
         self.conn
@@ -103,8 +112,8 @@ impl DBusSource {
     }
 }
 
-impl MatchingReceiver for DBusSource {
-    type F = FilterCb;
+impl MatchingReceiver for $s {
+    type F = $cb;
 
     fn start_receive(&self, m: MatchRule<'static>, f: Self::F) -> dbus::channel::Token {
         self.filters_mut().add(m, f)
@@ -115,7 +124,7 @@ impl MatchingReceiver for DBusSource {
     }
 }
 
-impl EventSource for DBusSource {
+impl EventSource for $s {
     type Event = Message;
     type Metadata = ();
     type Ret = ();
@@ -165,5 +174,30 @@ impl EventSource for DBusSource {
 
     fn unregister(&mut self, poll: &mut Poll) -> io::Result<()> {
         self.watch.unregister(poll)
+    }
+}
+
+    }
+}
+
+sourceimpl!(DBusSource, Connection, FilterCb, Send);
+sourceimpl!(LocalDBusSource, LocalConnection, LocalFilterCb);
+sourceimpl!(SyncDBusSource, SyncConnection, SyncFilterCb, Send, Sync);
+
+impl DBusSource {
+    fn filters_mut(&self) -> std::cell::RefMut<Filters<FilterCb>> {
+        self.filters.borrow_mut()
+    }
+}
+
+impl LocalDBusSource {
+    fn filters_mut(&self) -> std::cell::RefMut<Filters<LocalFilterCb>> {
+        self.filters.borrow_mut()
+    }
+}
+
+impl SyncDBusSource {
+    fn filters_mut(&self) -> std::sync::MutexGuard<Filters<SyncFilterCb>> {
+        self.filters.lock().unwrap()
     }
 }
