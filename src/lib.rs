@@ -5,7 +5,7 @@ use calloop::{
 use dbus::{
     blocking::stdintf::org_freedesktop_dbus,
     blocking::{Connection, LocalConnection, SyncConnection},
-    channel::{BusType, Channel, MatchingReceiver},
+    channel::{BusType, Channel, MatchingReceiver, Token},
     message::MatchRule,
     strings::BusName,
     Error, Message,
@@ -40,8 +40,18 @@ macro_rules! sourceimpl {
 type $cb = Box<dyn FnMut(Message, &$c) -> bool $(+ $ss)* + 'static>;
 
 impl $s {
-    pub fn new(bus_type: BusType) -> io::Result<Self> {
-        let mut channel = Channel::get_private(bus_type).map_err(|_| {
+    /// Create a new connection to the session bus.
+    pub fn new_session() -> io::Result<Self> {
+        Self::new(Channel::get_private(BusType::Session))
+    }
+
+    /// Create a new connection to the system-wide bus.
+    pub fn new_system() -> io::Result<Self> {
+        Self::new(Channel::get_private(BusType::System))
+    }
+
+    fn new(c: Result<Channel, Error>) -> io::Result<Self> {
+        let mut channel = c.map_err(|_| {
             io::Error::new(io::ErrorKind::ConnectionRefused, "Failed to connet to DBus")
         })?;
 
@@ -69,6 +79,63 @@ impl $s {
         })
     }
 
+    /// Get the connection's unique name.
+    ///
+    /// It's usually something like ":1.54"
+    pub fn unique_name(&self) -> BusName {
+        self.conn.unique_name()
+    }
+
+    /// Request a name on the D-Bus.
+    ///
+    /// For detailed information on the flags and return values, see the libdbus documentation.
+    pub fn request_name<'a, N: Into<BusName<'a>>>(
+        &self,
+        name: N,
+        allow_replacement: bool,
+        replace_existing: bool,
+        do_not_queue: bool,
+    ) -> Result<org_freedesktop_dbus::RequestNameReply, Error> {
+        self.conn
+            .request_name(name, allow_replacement, replace_existing, do_not_queue)
+    }
+
+    /// Release a previously requested name on the D-Bus.
+    pub fn release_name<'a, N: Into<BusName<'a>>>(&self, name: N) -> Result<org_freedesktop_dbus::ReleaseNameReply, Error> {
+        self.conn.release_name(name)
+    }
+
+    /// Adds a new match to the connection, and sets up a callback when this message arrives.
+    ///
+    /// The returned value can be used to remove the match. The match is also removed if the callback
+    /// returns "false".
+    // TODO: The callback should be that of DBus add_match with the calloop data added. We should
+    // also provide a version of add_match with is API compatible with DBus add_match.
+    pub fn add_match<'a, F>(
+        &mut self,
+        match_rule: MatchRule<'a>,
+        f: F,
+    ) -> Result<dbus::channel::Token, dbus::Error>
+    where
+        F: FnMut(Message, &$c) -> bool $(+ $ss)* + 'static,
+    {
+        let token = self.start_receive(match_rule.static_clone(), Box::new(f));
+        self.conn
+            .add_match_no_cb(&match_rule.match_str().as_str())
+            .map(|_| token)
+    }
+
+    /// Removes a previously added match and callback from the connection.
+    pub fn remove_match(&self, id: Token) -> Result<(), Error> {
+        let (mr, _) = self.stop_receive(id).ok_or_else(|| Error::new_failed("No match with id found"))?;
+        self.conn.remove_match_no_cb(&mr.match_str())
+    }
+
+    /// The Channel for this connection
+    pub fn channel(&self) -> &Channel {
+        self.conn.channel()
+    }
+
     /// Insert this source into the given event loop with an adapder that ether panics on orphan
     /// events or just logs it at debug level. You probaly only what this if you set eavesdrop on a
     /// MatchRule.
@@ -84,31 +151,6 @@ impl $s {
                 debug!("orphan {:#?}", msg);
             }
         })
-    }
-
-    pub fn request_name<'a, N: Into<BusName<'a>>>(
-        &self,
-        name: N,
-        allow_replacement: bool,
-        replace_existing: bool,
-        do_not_queue: bool,
-    ) -> Result<org_freedesktop_dbus::RequestNameReply, Error> {
-        self.conn
-            .request_name(name, allow_replacement, replace_existing, do_not_queue)
-    }
-
-    pub fn add_match<'a, F>(
-        &mut self,
-        match_rule: MatchRule<'a>,
-        f: F,
-    ) -> Result<dbus::channel::Token, dbus::Error>
-    where
-        F: FnMut(Message, &$c) -> bool $(+ $ss)* + 'static,
-    {
-        let token = self.start_receive(match_rule.static_clone(), Box::new(f));
-        self.conn
-            .add_match_no_cb(&match_rule.match_str().as_str())
-            .map(|_| token)
     }
 }
 
