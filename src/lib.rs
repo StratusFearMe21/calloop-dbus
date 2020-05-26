@@ -5,7 +5,7 @@ use calloop::{
 use dbus::{
     blocking::stdintf::org_freedesktop_dbus,
     blocking::{BlockingSender, Connection, LocalConnection, SyncConnection},
-    channel::{BusType, Channel, MatchingReceiver, Token},
+    channel::{BusType, Channel, MatchingReceiver, Sender, Token},
     message::MatchRule,
     strings::BusName,
     Error, Message,
@@ -169,6 +169,12 @@ impl MatchingReceiver for $s {
 impl BlockingSender for $s {
     fn send_with_reply_and_block(&self, msg: Message, timeout: std::time::Duration) -> Result<Message, Error> {
         self.conn.send_with_reply_and_block(msg, timeout)
+    }
+}
+
+impl Sender for $s {
+    fn send(&self, msg: Message) -> Result<u32, ()> {
+        self.conn.send(msg)
     }
 }
 
