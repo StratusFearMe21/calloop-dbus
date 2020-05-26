@@ -120,15 +120,15 @@ impl $s {
     /// returns "false".
     // TODO: The callback should be that of DBus add_match with the calloop data added. We should
     // also provide a version of add_match with is API compatible with DBus add_match.
-    pub fn add_match<'a, F>(
+    pub fn add_match<F>(
         &mut self,
-        match_rule: MatchRule<'a>,
+        match_rule: MatchRule<'static>,
         f: F,
     ) -> Result<dbus::channel::Token, dbus::Error>
     where
         F: FnMut(Message, &$c) -> bool $(+ $ss)* + 'static,
     {
-        let token = self.start_receive(match_rule.static_clone(), Box::new(f));
+        let token = self.start_receive(match_rule.clone(), Box::new(f));
         self.conn
             .add_match_no_cb(&match_rule.match_str().as_str())
             .map(|_| token)
