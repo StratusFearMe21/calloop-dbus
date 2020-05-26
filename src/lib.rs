@@ -4,10 +4,10 @@ use calloop::{
 };
 use dbus::{
     blocking::stdintf::org_freedesktop_dbus,
-    blocking::{BlockingSender, Connection, LocalConnection, SyncConnection},
+    blocking::{BlockingSender, Connection, LocalConnection, Proxy, SyncConnection},
     channel::{BusType, Channel, MatchingReceiver, Sender, Token},
     message::MatchRule,
-    strings::BusName,
+    strings::{BusName, Path},
     Error, Message,
 };
 use log::{debug, trace};
@@ -84,6 +84,15 @@ impl $s {
     /// It's usually something like ":1.54"
     pub fn unique_name(&self) -> BusName {
         self.conn.unique_name()
+    }
+
+    pub fn with_proxy<'a, 'b, D: Into<BusName<'a>>, P: Into<Path<'a>>>(
+        &'b self,
+        dest: D,
+        path: P,
+        timeout: std::time::Duration
+    ) -> Proxy<'a, &'b Self> {
+        Proxy { connection: self, destination: dest.into(), path: path.into(), timeout }
     }
 
     /// Request a name on the D-Bus.
