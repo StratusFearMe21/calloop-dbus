@@ -155,7 +155,7 @@ impl $s {
     ) -> Result<Source<$s>, InsertError<$s>> {
         handle.insert_source(self, move |msg, _, _| {
             if panic_on_orphan {
-                panic!("[calloop] Encountered an orphan event: {:#?}", msg,);
+                panic!("[calloop-dbus] Encountered an orphan event: {:#?}", msg,);
             } else {
                 debug!("orphan {:#?}", msg);
             }
