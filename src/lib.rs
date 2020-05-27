@@ -3,6 +3,7 @@ use calloop::{
     {EventSource, InsertError, Interest, Mode, Poll, Readiness, Source},
 };
 use dbus::{
+    arg::ReadAll,
     blocking::stdintf::org_freedesktop_dbus,
     blocking::{BlockingSender, Connection, LocalConnection, Proxy, SyncConnection},
     channel::{BusType, Channel, MatchingReceiver, Sender, Token},
@@ -37,7 +38,7 @@ pub struct SyncDBusSource {
 macro_rules! sourceimpl {
     ($s: ident, $c: ident, $cb: ident $(, $ss:tt)*) => {
 
-type $cb = Box<dyn FnMut(Message, &$c) -> bool $(+ $ss)* + 'static>;
+type $cb = Box<dyn FnMut(Message, &$s) -> bool $(+ $ss)* + 'static>;
 
 impl $s {
     /// Create a new connection to the session bus.
@@ -120,18 +121,17 @@ impl $s {
     /// returns "false".
     // TODO: The callback should be that of DBus add_match with the calloop data added. We should
     // also provide a version of add_match with is API compatible with DBus add_match.
-    pub fn add_match<F>(
-        &mut self,
+    pub fn add_match<S: ReadAll, F>(
+        &self,
         match_rule: MatchRule<'static>,
         f: F,
     ) -> Result<dbus::channel::Token, dbus::Error>
     where
-        F: FnMut(Message, &$c) -> bool $(+ $ss)* + 'static,
+        F: FnMut(S, &Self, &Message) -> bool $(+ $ss)* + 'static,
     {
-        let token = self.start_receive(match_rule.clone(), Box::new(f));
-        self.conn
-            .add_match_no_cb(&match_rule.match_str().as_str())
-            .map(|_| token)
+        let m = match_rule.match_str();
+        self.conn.add_match_no_cb(&m)?;
+        Ok(self.start_receive(match_rule, MakeSignal::make(f, m)))
     }
 
     /// Removes a previously added match and callback from the connection.
@@ -187,6 +187,22 @@ impl Sender for $s {
     }
 }
 
+impl<S: ReadAll, F: FnMut(S, &$s, &Message) -> bool $(+ $ss)* + 'static> MakeSignal<$cb, S, $s> for F {
+    fn make(mut self, mstr: String) -> $cb {
+        Box::new(move |msg: Message, es: &$s| {
+            if let Ok(s) = S::read(&mut msg.iter_init()) {
+                if self(s, es, &msg) {
+                    return true
+                };
+                let _ = es.conn.remove_match_no_cb(&mstr);
+                false
+            } else {
+                true
+            }
+        })
+    }
+}
+
 impl EventSource for $s {
     type Event = Message;
     type Metadata = ();
@@ -212,7 +228,7 @@ impl EventSource for $s {
             let mut remove: Option<dbus::channel::Token> = None;
             if let Some((token, (_, callback))) = self.filters_mut().get_matches(&message) {
                 trace!("match on message {:?}", &message);
-                if !callback(message, &self.conn) {
+                if !callback(message, &self) {
                     remove = Some(*token);
                 }
             } else {
@@ -263,4 +279,10 @@ impl SyncDBusSource {
     fn filters_mut(&self) -> std::sync::MutexGuard<Filters<SyncFilterCb>> {
         self.filters.lock().unwrap()
     }
+}
+
+/// Internal helper trait
+pub trait MakeSignal<G, S, T> {
+    /// Internal helper trait
+    fn make(self, mstr: String) -> G;
 }
