@@ -140,6 +140,10 @@ impl $s {
         self.conn.remove_match_no_cb(&mr.match_str())
     }
 
+    pub fn process(&mut self, timeout: std::time::Duration) -> Result<bool, Error> {
+        self.conn.process(timeout)
+    }
+
     /// The Channel for this connection
     pub fn channel(&self) -> &Channel {
         self.conn.channel()
