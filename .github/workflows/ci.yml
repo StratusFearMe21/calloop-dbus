@@ -19,6 +19,12 @@ jobs:
       - name: System dependencies
         run: sudo apt-get install --no-install-recommends -y libdbus-1-dev dbus at-spi2-core
 
+      - name: Start dbus
+        run: echo "::set-env name=DBUS_SESSION_BUS_ADDRESS::`dbus-daemon --session --print-address --fork`"
+
+      - name: echo dbus address
+        run: echo $DBUS_SESSION_BUS_ADDRESS
+
       - name: Checkout sources
         uses: actions/checkout@v2
 
@@ -50,6 +56,9 @@ jobs:
     steps:
       - name: System dependencies
         run: sudo apt-get install --no-install-recommends -y libdbus-1-dev dbus at-spi2-core
+
+      - name: Start dbus
+        run: export DBUS_SESSION_BUS_ADDRESS=`dbus-daemon --session --print-address --fork`
 
       - name: Checkout sources
         uses: actions/checkout@v2

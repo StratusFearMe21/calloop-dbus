@@ -16,5 +16,7 @@ task:
     - fetch https://sh.rustup.rs -o rustup.sh
     - sh rustup.sh -y --profile=minimal --default-toolchain stable
   test_script:
+    - dbus-uuidgen --ensure
+    - export DBUS_SESSION_BUS_ADDRESS=`dbus-daemon --session --print-address --fork`
     - . $HOME/.cargo/env
     - cargo test
