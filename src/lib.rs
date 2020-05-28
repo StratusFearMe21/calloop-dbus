@@ -14,6 +14,7 @@ use dbus::{
 use log::{trace, warn};
 
 use std::io;
+use std::time::Duration;
 
 mod filters;
 use filters::Filters;
@@ -36,11 +37,11 @@ pub struct SyncDBusSource {
     filters: std::sync::Mutex<Filters<SyncFilterCb>>,
 }
 macro_rules! sourceimpl {
-    ($s: ident, $c: ident, $cb: ident $(, $ss:tt)*) => {
+    ($source: ident, $connection: ident, $callback: ident $(, $ss:tt)*) => {
 
-type $cb = Box<dyn FnMut(Message, &$s) -> bool $(+ $ss)* + 'static>;
+type $callback = Box<dyn FnMut(Message, &$source) -> bool $(+ $ss)* + 'static>;
 
-impl $s {
+impl $source {
     /// Create a new connection to the session bus.
     pub fn new_session() -> io::Result<Self> {
         Self::new(Channel::get_private(BusType::Session))
@@ -87,11 +88,11 @@ impl $s {
         self.conn.unique_name()
     }
 
-    pub fn with_proxy<'a, 'b, D: Into<BusName<'a>>, P: Into<Path<'a>>>(
+    pub fn with_proxy<'a, 'b, Dest: Into<BusName<'a>>, BusPath: Into<Path<'a>>>(
         &'b self,
-        dest: D,
-        path: P,
-        timeout: std::time::Duration
+        dest: Dest,
+        path: BusPath,
+        timeout: Duration
     ) -> Proxy<'a, &'b Self> {
         Proxy { connection: self, destination: dest.into(), path: path.into(), timeout }
     }
@@ -99,9 +100,9 @@ impl $s {
     /// Request a name on the D-Bus.
     ///
     /// For detailed information on the flags and return values, see the libdbus documentation.
-    pub fn request_name<'a, N: Into<BusName<'a>>>(
+    pub fn request_name<'a, Name: Into<BusName<'a>>>(
         &self,
-        name: N,
+        name: Name,
         allow_replacement: bool,
         replace_existing: bool,
         do_not_queue: bool,
@@ -111,7 +112,7 @@ impl $s {
     }
 
     /// Release a previously requested name on the D-Bus.
-    pub fn release_name<'a, N: Into<BusName<'a>>>(&self, name: N) -> Result<org_freedesktop_dbus::ReleaseNameReply, Error> {
+    pub fn release_name<'a, Name: Into<BusName<'a>>>(&self, name: Name) -> Result<org_freedesktop_dbus::ReleaseNameReply, Error> {
         self.conn.release_name(name)
     }
 
@@ -121,26 +122,26 @@ impl $s {
     /// returns "false".
     // TODO: The callback should be that of DBus add_match with the calloop data added. We should
     // also provide a version of add_match with is API compatible with DBus add_match.
-    pub fn add_match<S: ReadAll, F>(
+    pub fn add_match<Args: ReadAll, Callback>(
         &self,
         match_rule: MatchRule<'static>,
-        f: F,
+        callback: Callback,
     ) -> Result<dbus::channel::Token, dbus::Error>
     where
-        F: FnMut(S, &Self, &Message) -> bool $(+ $ss)* + 'static,
+        Callback: FnMut(Args, &Self, &Message) -> bool $(+ $ss)* + 'static,
     {
-        let m = match_rule.match_str();
-        self.conn.add_match_no_cb(&m)?;
-        Ok(self.start_receive(match_rule, MakeSignal::make(f, m)))
+        let match_str = match_rule.match_str();
+        self.conn.add_match_no_cb(&match_str)?;
+        Ok(self.start_receive(match_rule, MakeSignal::make(callback, match_str)))
     }
 
     /// Removes a previously added match and callback from the connection.
     pub fn remove_match(&self, id: Token) -> Result<(), Error> {
-        let (mr, _) = self.stop_receive(id).ok_or_else(|| Error::new_failed("No match with id found"))?;
-        self.conn.remove_match_no_cb(&mr.match_str())
+        let (match_rule, _) = self.stop_receive(id).ok_or_else(|| Error::new_failed("No match with id found"))?;
+        self.conn.remove_match_no_cb(&match_rule.match_str())
     }
 
-    pub fn process(&mut self, timeout: std::time::Duration) -> Result<bool, Error> {
+    pub fn process(&mut self, timeout: Duration) -> Result<bool, Error> {
         self.conn.process(timeout)
     }
 
@@ -156,7 +157,7 @@ impl $s {
         self,
         handle: calloop::LoopHandle<Data>,
         panic_on_orphan: bool,
-    ) -> Result<Source<$s>, InsertError<$s>> {
+    ) -> Result<Source<$source>, InsertError<$source>> {
         handle.insert_source(self, move |msg, connection, _data| {
             match connection.filters_mut().get_matches(&msg) {
                 Some((token, (_, callback))) => {
@@ -177,11 +178,11 @@ impl $s {
     }
 }
 
-impl MatchingReceiver for $s {
-    type F = $cb;
+impl MatchingReceiver for $source {
+    type F = $callback;
 
-    fn start_receive(&self, m: MatchRule<'static>, f: Self::F) -> dbus::channel::Token {
-        self.filters_mut().add(m, f)
+    fn start_receive(&self, match_rule: MatchRule<'static>, callback: Self::F) -> dbus::channel::Token {
+        self.filters_mut().add(match_rule, callback)
     }
 
     fn stop_receive(&self, id: dbus::channel::Token) -> Option<(MatchRule<'static>, Self::F)> {
@@ -189,26 +190,26 @@ impl MatchingReceiver for $s {
     }
 }
 
-impl BlockingSender for $s {
-    fn send_with_reply_and_block(&self, msg: Message, timeout: std::time::Duration) -> Result<Message, Error> {
+impl BlockingSender for $source {
+    fn send_with_reply_and_block(&self, msg: Message, timeout: Duration) -> Result<Message, Error> {
         self.conn.send_with_reply_and_block(msg, timeout)
     }
 }
 
-impl Sender for $s {
+impl Sender for $source {
     fn send(&self, msg: Message) -> Result<u32, ()> {
         self.conn.send(msg)
     }
 }
 
-impl<S: ReadAll, F: FnMut(S, &$s, &Message) -> bool $(+ $ss)* + 'static> MakeSignal<$cb, S, $s> for F {
-    fn make(mut self, mstr: String) -> $cb {
-        Box::new(move |msg: Message, es: &$s| {
-            if let Ok(s) = S::read(&mut msg.iter_init()) {
-                if self(s, es, &msg) {
+impl<Args: ReadAll, Callback: FnMut(Args, &$source, &Message) -> bool $(+ $ss)* + 'static> MakeSignal<$callback, Args, $source> for Callback {
+    fn make(mut self, match_str: String) -> $callback {
+        Box::new(move |msg: Message, event_source: &$source| {
+            if let Ok(args) = Args::read(&mut msg.iter_init()) {
+                if self(args, event_source, &msg) {
                     return true
                 };
-                let _ = es.conn.remove_match_no_cb(&mstr);
+                let _ = event_source.conn.remove_match_no_cb(&match_str);
                 false
             } else {
                 true
@@ -217,24 +218,24 @@ impl<S: ReadAll, F: FnMut(S, &$s, &Message) -> bool $(+ $ss)* + 'static> MakeSig
     }
 }
 
-impl EventSource for $s {
+impl EventSource for $source {
     type Event = Message;
-    type Metadata = $s;
+    type Metadata = $source;
     type Ret = Option<Token>;
 
-    fn process_events<F>(
+    fn process_events<Callback>(
         &mut self,
         _: Readiness,
         _: calloop::Token,
-        mut callback: F,
+        mut callback: Callback,
     ) -> io::Result<()>
     where
-        F: FnMut(Self::Event, &mut Self::Metadata) -> Self::Ret,
+        Callback: FnMut(Self::Event, &mut Self::Metadata) -> Self::Ret,
     {
         // read in all message and send quote ones
         self.conn
             .channel()
-            .read_write(Some(std::time::Duration::from_millis(0)))
+            .read_write(Some(Duration::from_millis(0)))
             .map_err(|()| {
                 io::Error::new(io::ErrorKind::NotConnected, "DBus connection is closed")
             })?;
@@ -292,7 +293,7 @@ impl SyncDBusSource {
 /// Internal helper trait
 pub trait MakeSignal<G, S, T> {
     /// Internal helper trait
-    fn make(self, mstr: String) -> G;
+    fn make(self, match_str: String) -> G;
 }
 
 #[test]
@@ -330,7 +331,7 @@ fn test_peer() {
     let j = std::thread::spawn(move || {
         let c2 = DBusSource::new_session().unwrap();
 
-        let proxy = c2.with_proxy(c_name, "/", std::time::Duration::from_secs(5));
+        let proxy = c2.with_proxy(c_name, "/", Duration::from_secs(5));
         let (s2,): (String,) = proxy
             .method_call("org.freedesktop.DBus.Peer", "GetMachineId", ())
             .unwrap();
@@ -341,7 +342,7 @@ fn test_peer() {
     assert_eq!(Arc::strong_count(&done), 2);
 
     for _ in 0..30 {
-        c.process(std::time::Duration::from_millis(100)).unwrap();
+        c.process(Duration::from_millis(100)).unwrap();
         if Arc::strong_count(&done) < 2 {
             break;
         }
@@ -349,11 +350,7 @@ fn test_peer() {
 
     let s2 = j.join().unwrap();
 
-    let proxy = c.with_proxy(
-        "org.a11y.Bus",
-        "/org/a11y/bus",
-        std::time::Duration::from_secs(5),
-    );
+    let proxy = c.with_proxy("org.a11y.Bus", "/org/a11y/bus", Duration::from_secs(5));
     let (s1,): (String,) = proxy
         .method_call("org.freedesktop.DBus.Peer", "GetMachineId", ())
         .unwrap();
