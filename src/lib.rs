@@ -11,7 +11,7 @@ use dbus::{
     strings::{BusName, Path},
     Error, Message,
 };
-use log::{debug, trace};
+use log::{trace, warn};
 
 use std::io;
 
@@ -150,19 +150,29 @@ impl $s {
     }
 
     /// Insert this source into the given event loop with an adapder that ether panics on orphan
-    /// events or just logs it at debug level. You probaly only what this if you set eavesdrop on a
+    /// events or just logs it at warn level. You probably only what this if you set eavesdrop on a
     /// MatchRule.
     pub fn quick_insert<Data: 'static>(
         self,
         handle: calloop::LoopHandle<Data>,
         panic_on_orphan: bool,
     ) -> Result<Source<$s>, InsertError<$s>> {
-        handle.insert_source(self, move |msg, _, _| {
-            if panic_on_orphan {
-                panic!("[calloop-dbus] Encountered an orphan event: {:#?}", msg,);
-            } else {
-                debug!("orphan {:#?}", msg);
+        handle.insert_source(self, move |msg, connection, _data| {
+            match connection.filters_mut().get_matches(&msg) {
+                Some((token, (_, callback))) => {
+                    trace!("match on {:?}", &msg);
+                    if callback(msg, &connection) {
+                        return Some(*token)
+                    }
+                }
+                None => {
+                    if panic_on_orphan {
+                        panic!("[calloop-dbus] Encountered an orphan event: {:#?}", msg,);
+                    }
+                    warn!("orphan {:#?}", msg);
+                }
             }
+            None
         })
     }
 }
@@ -209,18 +219,19 @@ impl<S: ReadAll, F: FnMut(S, &$s, &Message) -> bool $(+ $ss)* + 'static> MakeSig
 
 impl EventSource for $s {
     type Event = Message;
-    type Metadata = ();
-    type Ret = ();
+    type Metadata = $s;
+    type Ret = Option<Token>;
 
     fn process_events<F>(
         &mut self,
         _: Readiness,
         _: calloop::Token,
-        mut fcallback: F,
+        mut callback: F,
     ) -> io::Result<()>
     where
         F: FnMut(Self::Event, &mut Self::Metadata) -> Self::Ret,
     {
+        // read in all message and send quote ones
         self.conn
             .channel()
             .read_write(Some(std::time::Duration::from_millis(0)))
@@ -228,18 +239,11 @@ impl EventSource for $s {
                 io::Error::new(io::ErrorKind::NotConnected, "DBus connection is closed")
             })?;
 
+        // process each message
         while let Some(message) = self.conn.channel().pop_message() {
-            let mut remove: Option<dbus::channel::Token> = None;
-            if let Some((token, (_, callback))) = self.filters_mut().get_matches(&message) {
-                trace!("match on message {:?}", &message);
-                if !callback(message, &self) {
-                    remove = Some(*token);
-                }
-            } else {
-                fcallback(message, &mut ());
-            }
-            if let Some(token) = remove {
-                self.filters_mut().remove(token);
+            if let Some(token) = callback(message, self) {
+                self.conn.remove_match(token)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             }
         }
 
