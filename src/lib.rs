@@ -19,29 +19,33 @@ use std::time::Duration;
 mod filters;
 use filters::Filters;
 
-pub struct DBusSource {
+/// A event source connection to D-Bus, non-async version where callbacks are Send but not Sync.
+pub struct DBusSource<Data: 'static> {
     conn: Connection,
     watch: Generic<Fd>,
-    filters: std::cell::RefCell<Filters<FilterCb>>,
+    filters: std::cell::RefCell<Filters<FilterCb<Data>>>,
 }
 
-pub struct LocalDBusSource {
+/// A event source conncetion to D-Bus, thread local + non-async version
+pub struct LocalDBusSource<Data: 'static> {
     conn: LocalConnection,
     watch: Generic<Fd>,
-    filters: std::cell::RefCell<Filters<LocalFilterCb>>,
+    filters: std::cell::RefCell<Filters<LocalFilterCb<Data>>>,
 }
 
-pub struct SyncDBusSource {
+/// A event source connection to D-Bus, Send + Sync + non-async version
+pub struct SyncDBusSource<Data: 'static> {
     conn: SyncConnection,
     watch: Generic<Fd>,
-    filters: std::sync::Mutex<Filters<SyncFilterCb>>,
+    filters: std::sync::Mutex<Filters<SyncFilterCb<Data>>>,
 }
+
 macro_rules! sourceimpl {
     ($source: ident, $connection: ident, $callback: ident $(, $ss:tt)*) => {
 
-type $callback = Box<dyn FnMut(Message, &$source) -> bool $(+ $ss)* + 'static>;
+type $callback<Data> = Box<dyn FnMut(Message, &$source<Data>, &mut Data) -> bool $(+ $ss)* + 'static>;
 
-impl $source {
+impl<Data> $source<Data> {
     /// Create a new connection to the session bus.
     pub fn new_session() -> io::Result<Self> {
         Self::new(Channel::get_private(BusType::Session))
@@ -128,7 +132,7 @@ impl $source {
         callback: Callback,
     ) -> Result<dbus::channel::Token, dbus::Error>
     where
-        Callback: FnMut(Args, &Self, &Message) -> bool $(+ $ss)* + 'static,
+        Callback: FnMut(Args, &Self, &Message, &mut Data) -> bool $(+ $ss)* + 'static,
     {
         let match_str = match_rule.match_str();
         self.conn.add_match_no_cb(&match_str)?;
@@ -153,16 +157,16 @@ impl $source {
     /// Insert this source into the given event loop with an adapder that ether panics on orphan
     /// events or just logs it at warn level. You probably only what this if you set eavesdrop on a
     /// MatchRule.
-    pub fn quick_insert<Data: 'static>(
+    pub fn quick_insert(
         self,
         handle: calloop::LoopHandle<Data>,
         panic_on_orphan: bool,
-    ) -> Result<Source<$source>, InsertError<$source>> {
-        handle.insert_source(self, move |msg, connection, _data| {
+    ) -> Result<Source<$source<Data>>, InsertError<$source<Data>>> {
+        handle.insert_source(self, move |msg, connection, data| {
             match connection.filters_mut().get_matches(&msg) {
                 Some((token, (_, callback))) => {
                     trace!("match on {:?}", &msg);
-                    if callback(msg, &connection) {
+                    if callback(msg, &connection, data) {
                         return Some(*token)
                     }
                 }
@@ -178,8 +182,8 @@ impl $source {
     }
 }
 
-impl MatchingReceiver for $source {
-    type F = $callback;
+impl<Data> MatchingReceiver for $source<Data> {
+    type F = $callback<Data>;
 
     fn start_receive(&self, match_rule: MatchRule<'static>, callback: Self::F) -> dbus::channel::Token {
         self.filters_mut().add(match_rule, callback)
@@ -190,23 +194,25 @@ impl MatchingReceiver for $source {
     }
 }
 
-impl BlockingSender for $source {
+impl<Data> BlockingSender for $source<Data> {
     fn send_with_reply_and_block(&self, msg: Message, timeout: Duration) -> Result<Message, Error> {
         self.conn.send_with_reply_and_block(msg, timeout)
     }
 }
 
-impl Sender for $source {
+impl<Data> Sender for $source<Data> {
     fn send(&self, msg: Message) -> Result<u32, ()> {
         self.conn.send(msg)
     }
 }
 
-impl<Args: ReadAll, Callback: FnMut(Args, &$source, &Message) -> bool $(+ $ss)* + 'static> MakeSignal<$callback, Args, $source> for Callback {
-    fn make(mut self, match_str: String) -> $callback {
-        Box::new(move |msg: Message, event_source: &$source| {
+impl<Args: ReadAll, Callback: FnMut(Args, &$source<Data>, &Message, &mut Data) -> bool $(+ $ss)* + 'static, Data>
+    MakeSignal<$callback<Data>, Args, $source<Data>> for Callback
+{
+    fn make(mut self, match_str: String) -> $callback<Data> {
+        Box::new(move |msg: Message, event_source: &$source<Data>, data: &mut Data| {
             if let Ok(args) = Args::read(&mut msg.iter_init()) {
-                if self(args, event_source, &msg) {
+                if self(args, event_source, &msg, data) {
                     return true
                 };
                 let _ = event_source.conn.remove_match_no_cb(&match_str);
@@ -218,9 +224,9 @@ impl<Args: ReadAll, Callback: FnMut(Args, &$source, &Message) -> bool $(+ $ss)* 
     }
 }
 
-impl EventSource for $source {
+impl<Data> EventSource for $source<Data> {
     type Event = Message;
-    type Metadata = $source;
+    type Metadata = $source<Data>;
     type Ret = Option<Token>;
 
     fn process_events<Callback>(
@@ -272,20 +278,20 @@ sourceimpl!(DBusSource, Connection, FilterCb, Send);
 sourceimpl!(LocalDBusSource, LocalConnection, LocalFilterCb);
 sourceimpl!(SyncDBusSource, SyncConnection, SyncFilterCb, Send, Sync);
 
-impl DBusSource {
-    fn filters_mut(&self) -> std::cell::RefMut<Filters<FilterCb>> {
+impl<Data> DBusSource<Data> {
+    fn filters_mut(&self) -> std::cell::RefMut<Filters<FilterCb<Data>>> {
         self.filters.borrow_mut()
     }
 }
 
-impl LocalDBusSource {
-    fn filters_mut(&self) -> std::cell::RefMut<Filters<LocalFilterCb>> {
+impl<Data> LocalDBusSource<Data> {
+    fn filters_mut(&self) -> std::cell::RefMut<Filters<LocalFilterCb<Data>>> {
         self.filters.borrow_mut()
     }
 }
 
-impl SyncDBusSource {
-    fn filters_mut(&self) -> std::sync::MutexGuard<Filters<SyncFilterCb>> {
+impl<Data> SyncDBusSource<Data> {
+    fn filters_mut(&self) -> std::sync::MutexGuard<Filters<SyncFilterCb<Data>>> {
         self.filters.lock().unwrap()
     }
 }
@@ -300,9 +306,9 @@ pub trait MakeSignal<G, S, T> {
 fn test_add_match() {
     use dbus::blocking::stdintf::org_freedesktop_dbus::PropertiesPropertiesChanged as Ppc;
     use dbus::message::SignalArgs;
-    let c = DBusSource::new_session().unwrap();
+    let c: DBusSource<usize> = DBusSource::new_session().unwrap();
     let x = c
-        .add_match(Ppc::match_rule(None, None), |_: Ppc, _, _| true)
+        .add_match(Ppc::match_rule(None, None), |_: Ppc, _, _, _| true)
         .unwrap();
     c.remove_match(x).unwrap();
 }
@@ -312,24 +318,24 @@ fn test_conn_send_sync() {
     fn is_send<T: Send>(_: &T) {}
     fn is_sync<T: Sync>(_: &T) {}
 
-    let c = SyncDBusSource::new_session().unwrap();
+    let c: SyncDBusSource<usize> = SyncDBusSource::new_session().unwrap();
     is_send(&c);
     is_sync(&c);
 
-    let c = DBusSource::new_session().unwrap();
+    let c: DBusSource<usize> = DBusSource::new_session().unwrap();
     is_send(&c);
 }
 
 #[test]
 fn test_peer() {
-    let mut c = DBusSource::new_session().unwrap();
+    let mut c: DBusSource<usize> = DBusSource::new_session().unwrap();
 
     let c_name = c.unique_name().into_static();
     use std::sync::Arc;
     let done = Arc::new(false);
     let d2 = done.clone();
     let j = std::thread::spawn(move || {
-        let c2 = DBusSource::new_session().unwrap();
+        let c2: DBusSource<usize> = DBusSource::new_session().unwrap();
 
         let proxy = c2.with_proxy(c_name, "/", Duration::from_secs(5));
         let (s2,): (String,) = proxy
