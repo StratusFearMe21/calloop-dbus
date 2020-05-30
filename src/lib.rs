@@ -284,7 +284,7 @@ impl<Data> EventSource for $source<Data> {
         // process each message
         while let Some(message) = self.conn.channel().pop_message() {
             if let Some(token) = callback(message, self) {
-                self.conn.remove_match(token)
+                self.remove_match(token)
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             }
         }
