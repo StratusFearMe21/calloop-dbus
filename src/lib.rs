@@ -202,6 +202,10 @@ impl<Data> $source<Data> {
                     }
                 }
                 None => {
+                    if let Some(reply) = dbus::channel::default_reply(&msg) {
+                        let _ = connection.send(reply);
+                        return None;
+                    }
                     if panic_on_orphan {
                         panic!("[calloop-dbus] Encountered an orphan event: {:#?}", msg);
                     }
