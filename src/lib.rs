@@ -124,9 +124,25 @@ impl<Data> $source<Data> {
     ///
     /// The returned value can be used to remove the match. The match is also removed if the callback
     /// returns "false".
-    // TODO: The callback should be that of DBus add_match with the calloop data added. We should
-    // also provide a version of add_match with is API compatible with DBus add_match.
     pub fn add_match<Args: ReadAll, Callback>(
+        &self,
+        match_rule: MatchRule<'static>,
+        callback: Callback,
+    ) -> Result<dbus::channel::Token, dbus::Error>
+    where
+        Callback: FnMut(Args, &Self, &Message) -> bool $(+ $ss)* + 'static,
+    {
+        let match_str = match_rule.match_str();
+        self.conn.add_match_no_cb(&match_str)?;
+        Ok(self.start_receive(match_rule, MakeSignal::make(callback, match_str)))
+    }
+
+    /// Adds a new match to the connection, and sets up a callback when this message arrives. This
+    /// callback will be able to access the calloop user data.
+    ///
+    /// The returned value can be used to remove the match. The match is also removed if the callback
+    /// returns "false".
+    pub fn add_match_data<Args: ReadAll, Callback>(
         &self,
         match_rule: MatchRule<'static>,
         callback: Callback,
@@ -136,7 +152,7 @@ impl<Data> $source<Data> {
     {
         let match_str = match_rule.match_str();
         self.conn.add_match_no_cb(&match_str)?;
-        Ok(self.start_receive(match_rule, MakeSignal::make(callback, match_str)))
+        Ok(self.start_receive(match_rule, MakeDataSignal::make(callback, match_str)))
     }
 
     /// Removes a previously added match and callback from the connection.
@@ -172,7 +188,7 @@ impl<Data> $source<Data> {
                 }
                 None => {
                     if panic_on_orphan {
-                        panic!("[calloop-dbus] Encountered an orphan event: {:#?}", msg,);
+                        panic!("[calloop-dbus] Encountered an orphan event: {:#?}", msg);
                     }
                     warn!("orphan {:#?}", msg);
                 }
@@ -207,12 +223,30 @@ impl<Data> Sender for $source<Data> {
 }
 
 impl<Args: ReadAll, Callback: FnMut(Args, &$source<Data>, &Message, &mut Data) -> bool $(+ $ss)* + 'static, Data>
-    MakeSignal<$callback<Data>, Args, $source<Data>> for Callback
+    MakeDataSignal<$callback<Data>, Args, $source<Data>> for Callback
 {
     fn make(mut self, match_str: String) -> $callback<Data> {
         Box::new(move |msg: Message, event_source: &$source<Data>, data: &mut Data| {
             if let Ok(args) = Args::read(&mut msg.iter_init()) {
                 if self(args, event_source, &msg, data) {
+                    return true
+                };
+                let _ = event_source.conn.remove_match_no_cb(&match_str);
+                false
+            } else {
+                true
+            }
+        })
+    }
+}
+
+impl<Args: ReadAll, Callback: FnMut(Args, &$source<Data>, &Message) -> bool $(+ $ss)* + 'static, Data>
+    MakeSignal<$callback<Data>, Args, $source<Data>> for Callback
+{
+    fn make(mut self, match_str: String) -> $callback<Data> {
+        Box::new(move |msg: Message, event_source: &$source<Data>, _| {
+            if let Ok(args) = Args::read(&mut msg.iter_init()) {
+                if self(args, event_source, &msg) {
                     return true
                 };
                 let _ = event_source.conn.remove_match_no_cb(&match_str);
@@ -301,16 +335,22 @@ pub trait MakeSignal<G, S, T> {
     /// Internal helper trait
     fn make(self, match_str: String) -> G;
 }
+///
+/// Internal helper trait
+pub trait MakeDataSignal<G, S, T> {
+    /// Internal helper trait
+    fn make(self, match_str: String) -> G;
+}
 
 #[test]
 fn test_add_match() {
     use dbus::blocking::stdintf::org_freedesktop_dbus::PropertiesPropertiesChanged as Ppc;
     use dbus::message::SignalArgs;
-    let c: DBusSource<usize> = DBusSource::new_session().unwrap();
-    let x = c
+    let source: DBusSource<usize> = DBusSource::new_session().unwrap();
+    let token = source
         .add_match(Ppc::match_rule(None, None), |_: Ppc, _, _, _| true)
         .unwrap();
-    c.remove_match(x).unwrap();
+    source.remove_match(token).unwrap();
 }
 
 #[test]
@@ -318,45 +358,45 @@ fn test_conn_send_sync() {
     fn is_send<T: Send>(_: &T) {}
     fn is_sync<T: Sync>(_: &T) {}
 
-    let c: SyncDBusSource<usize> = SyncDBusSource::new_session().unwrap();
-    is_send(&c);
-    is_sync(&c);
+    let source: SyncDBusSource<usize> = SyncDBusSource::new_session().unwrap();
+    is_send(&source);
+    is_sync(&source);
 
-    let c: DBusSource<usize> = DBusSource::new_session().unwrap();
-    is_send(&c);
+    let source: DBusSource<usize> = DBusSource::new_session().unwrap();
+    is_send(&source);
 }
 
 #[test]
 fn test_peer() {
-    let mut c: DBusSource<usize> = DBusSource::new_session().unwrap();
+    let mut source: DBusSource<usize> = DBusSource::new_session().unwrap();
 
-    let c_name = c.unique_name().into_static();
+    let source_name = source.unique_name().into_static();
     use std::sync::Arc;
     let done = Arc::new(false);
-    let d2 = done.clone();
-    let j = std::thread::spawn(move || {
-        let c2: DBusSource<usize> = DBusSource::new_session().unwrap();
+    let done2 = done.clone();
+    let thread = std::thread::spawn(move || {
+        let source2: DBusSource<usize> = DBusSource::new_session().unwrap();
 
-        let proxy = c2.with_proxy(c_name, "/", Duration::from_secs(5));
-        let (s2,): (String,) = proxy
+        let proxy = source2.with_proxy(source_name, "/", Duration::from_secs(5));
+        let (signal2,): (String,) = proxy
             .method_call("org.freedesktop.DBus.Peer", "GetMachineId", ())
             .unwrap();
-        println!("{}", s2);
-        assert_eq!(Arc::strong_count(&d2), 2);
-        s2
+        println!("{}", signal2);
+        assert_eq!(Arc::strong_count(&done2), 2);
+        signal2
     });
     assert_eq!(Arc::strong_count(&done), 2);
 
     for _ in 0..30 {
-        c.process(Duration::from_millis(100)).unwrap();
+        source.process(Duration::from_millis(100)).unwrap();
         if Arc::strong_count(&done) < 2 {
             break;
         }
     }
 
-    let s2 = j.join().unwrap();
+    let s2 = thread.join().unwrap();
 
-    let proxy = c.with_proxy("org.a11y.Bus", "/org/a11y/bus", Duration::from_secs(5));
+    let proxy = source.with_proxy("org.a11y.Bus", "/org/a11y/bus", Duration::from_secs(5));
     let (s1,): (String,) = proxy
         .method_call("org.freedesktop.DBus.Peer", "GetMachineId", ())
         .unwrap();
