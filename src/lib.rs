@@ -197,7 +197,7 @@ impl<Data> $source<Data> {
             match connection.filters_mut().get_matches(&msg) {
                 Some((token, (_, callback))) => {
                     trace!("match on {:?}", &msg);
-                    if callback(msg, &connection, data) {
+                    if !callback(msg, &connection, data) {
                         return Some(*token)
                     }
                 }
