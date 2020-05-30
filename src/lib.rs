@@ -16,6 +16,7 @@ use log::{trace, warn};
 use std::io;
 use std::time::Duration;
 
+pub use dbus;
 mod filters;
 use filters::Filters;
 
