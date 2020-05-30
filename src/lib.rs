@@ -237,6 +237,7 @@ impl<Data> BlockingSender for $source<Data> {
 
 impl<Data> Sender for $source<Data> {
     fn send(&self, msg: Message) -> Result<u32, ()> {
+        trace!("sending {:?}", &msg);
         self.conn.send(msg)
     }
 }
@@ -301,6 +302,7 @@ impl<Data> EventSource for $source<Data> {
 
         // process each message
         while let Some(message) = self.conn.channel().pop_message() {
+            trace!("recieved {:?}", &message);
             if let Some(token) = callback(message, self) {
                 self.remove_match(token)
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
