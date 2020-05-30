@@ -7,8 +7,8 @@ use dbus::{
     blocking::stdintf::org_freedesktop_dbus,
     blocking::{BlockingSender, Connection, LocalConnection, Proxy, SyncConnection},
     channel::{BusType, Channel, MatchingReceiver, Sender, Token},
-    message::MatchRule,
-    strings::{BusName, Path},
+    message::{MatchRule, MessageType},
+    strings::{BusName, Interface, Member, Path},
     Error, Message,
 };
 use log::{trace, warn};
@@ -79,11 +79,25 @@ impl<Data> $source<Data> {
         };
 
         let watch = Generic::from_fd(watch_fd.fd, interest, Mode::Level);
-        Ok(Self {
-            conn: channel.into(),
+
+        let conn: $connection = channel.into();
+
+        // lets a default match rule to catch the NameAcuierd messages
+        let mut match_rule_nameacquired = MatchRule::default();
+        match_rule_nameacquired.msg_type = Some(MessageType::Signal);
+        match_rule_nameacquired.path = Some(Path::new("/org/freedesktop/DBus").unwrap());
+        match_rule_nameacquired.interface = Some(Interface::new("org.freedesktop.DBus").unwrap());
+        match_rule_nameacquired.member = Some(Member::new("NameAcquired").unwrap());
+
+        let source = Self {
+            conn,
             watch,
             filters: Default::default(),
-        })
+        };
+
+        source.add_match(match_rule_nameacquired, |_: (), _, _| true).unwrap();
+        Ok(source)
+
     }
 
     /// Get the connection's unique name.
