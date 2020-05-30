@@ -348,7 +348,7 @@ fn test_add_match() {
     use dbus::message::SignalArgs;
     let source: DBusSource<usize> = DBusSource::new_session().unwrap();
     let token = source
-        .add_match(Ppc::match_rule(None, None), |_: Ppc, _, _, _| true)
+        .add_match(Ppc::match_rule(None, None), |_: Ppc, _, _| true)
         .unwrap();
     source.remove_match(token).unwrap();
 }
