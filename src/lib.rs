@@ -1,4 +1,5 @@
 use calloop::{
+    channel,
     generic::{Fd, Generic},
     {EventSource, InsertError, Interest, Mode, Poll, Readiness, Source},
 };
@@ -25,6 +26,7 @@ pub struct DBusSource<Data: 'static> {
     conn: Connection,
     watch: Generic<Fd>,
     filters: std::cell::RefCell<Filters<FilterCb<Data>>>,
+    channel: channel::Channel<Message>,
 }
 
 /// A event source conncetion to D-Bus, thread local + non-async version
@@ -32,6 +34,7 @@ pub struct LocalDBusSource<Data: 'static> {
     conn: LocalConnection,
     watch: Generic<Fd>,
     filters: std::cell::RefCell<Filters<LocalFilterCb<Data>>>,
+    channel: channel::Channel<Message>,
 }
 
 /// A event source connection to D-Bus, Send + Sync + non-async version
@@ -39,6 +42,7 @@ pub struct SyncDBusSource<Data: 'static> {
     conn: SyncConnection,
     watch: Generic<Fd>,
     filters: std::sync::Mutex<Filters<SyncFilterCb<Data>>>,
+    channel: std::sync::Mutex<channel::Channel<Message>>,
 }
 
 macro_rules! sourceimpl {
@@ -48,16 +52,16 @@ type $callback<Data> = Box<dyn FnMut(Message, &$source<Data>, &mut Data) -> bool
 
 impl<Data> $source<Data> {
     /// Create a new connection to the session bus.
-    pub fn new_session() -> io::Result<Self> {
+    pub fn new_session() -> io::Result<(Self, channel::Sender<Message>)> {
         Self::new(Channel::get_private(BusType::Session))
     }
 
     /// Create a new connection to the system-wide bus.
-    pub fn new_system() -> io::Result<Self> {
+    pub fn new_system() -> io::Result<(Self, channel::Sender<Message>)> {
         Self::new(Channel::get_private(BusType::System))
     }
 
-    fn new(c: Result<Channel, Error>) -> io::Result<Self> {
+    fn new(c: Result<Channel, Error>) -> io::Result<(Self, channel::Sender<Message>)> {
         let mut channel = c.map_err(|_| {
             io::Error::new(io::ErrorKind::ConnectionRefused, "Failed to connet to DBus")
         })?;
@@ -89,14 +93,17 @@ impl<Data> $source<Data> {
         match_rule_nameacquired.interface = Some(Interface::new("org.freedesktop.DBus").unwrap());
         match_rule_nameacquired.member = Some(Member::new("NameAcquired").unwrap());
 
+        let (sender, channel) = channel::channel::<Message>();
+
         let source = Self {
             conn,
             watch,
             filters: Default::default(),
+            channel: Self::pack_channel(channel)
         };
 
         source.add_match(match_rule_nameacquired, |_: (), _, _| true).unwrap();
-        Ok(source)
+        Ok((source, sender))
 
     }
 
@@ -285,14 +292,25 @@ impl<Data> EventSource for $source<Data> {
 
     fn process_events<Callback>(
         &mut self,
-        _: Readiness,
-        _: calloop::Token,
+        readiness: Readiness,
+        token: calloop::Token,
         mut callback: Callback,
     ) -> io::Result<()>
     where
         Callback: FnMut(Self::Event, &mut Self::Metadata) -> Self::Ret,
     {
-        // read in all message and send quote ones
+        let mut signals: Vec<Message> = Vec::new();
+        self.channel_mut().process_events(readiness, token, |event, _| {
+            if let channel::Event::Msg(msg) = event {
+                signals.push(msg);
+            }
+        }).unwrap();
+
+        for s in signals {
+            self.send(s).unwrap();
+        }
+
+        // read in all message and send queued ones
         self.conn
             .channel()
             .read_write(Some(Duration::from_millis(0)))
@@ -315,14 +333,17 @@ impl<Data> EventSource for $source<Data> {
 
     fn register(&mut self, poll: &mut Poll, token: calloop::Token) -> io::Result<()> {
         self.watch.register(poll, token)
+            .and_then(|_| self.channel_mut().register(poll, token))
     }
 
     fn reregister(&mut self, poll: &mut Poll, token: calloop::Token) -> io::Result<()> {
         self.watch.reregister(poll, token)
+            .and_then(|_| self.channel_mut().reregister(poll, token))
     }
 
     fn unregister(&mut self, poll: &mut Poll) -> io::Result<()> {
         self.watch.unregister(poll)
+            .and_then(|_| self.channel_mut().unregister(poll))
     }
 }
 
@@ -337,17 +358,43 @@ impl<Data> DBusSource<Data> {
     fn filters_mut(&self) -> std::cell::RefMut<Filters<FilterCb<Data>>> {
         self.filters.borrow_mut()
     }
+
+    fn channel_mut(&mut self) -> &mut channel::Channel<Message> {
+        &mut self.channel
+    }
+
+    fn pack_channel(channel: channel::Channel<Message>) -> channel::Channel<Message> {
+        channel
+    }
 }
 
 impl<Data> LocalDBusSource<Data> {
     fn filters_mut(&self) -> std::cell::RefMut<Filters<LocalFilterCb<Data>>> {
         self.filters.borrow_mut()
     }
+
+    fn channel_mut(&mut self) -> &mut channel::Channel<Message> {
+        &mut self.channel
+    }
+
+    fn pack_channel(channel: channel::Channel<Message>) -> channel::Channel<Message> {
+        channel
+    }
 }
 
 impl<Data> SyncDBusSource<Data> {
     fn filters_mut(&self) -> std::sync::MutexGuard<Filters<SyncFilterCb<Data>>> {
         self.filters.lock().unwrap()
+    }
+
+    fn channel_mut(&self) -> std::sync::MutexGuard<channel::Channel<Message>> {
+        self.channel.lock().unwrap()
+    }
+
+    fn pack_channel(
+        channel: channel::Channel<Message>,
+    ) -> std::sync::Mutex<channel::Channel<Message>> {
+        std::sync::Mutex::new(channel)
     }
 }
 
@@ -367,7 +414,7 @@ pub trait MakeDataSignal<G, S, T> {
 fn test_add_match() {
     use dbus::blocking::stdintf::org_freedesktop_dbus::PropertiesPropertiesChanged as Ppc;
     use dbus::message::SignalArgs;
-    let source: DBusSource<usize> = DBusSource::new_session().unwrap();
+    let (source, _): (DBusSource<usize>, _) = DBusSource::new_session().unwrap();
     let token = source
         .add_match(Ppc::match_rule(None, None), |_: Ppc, _, _| true)
         .unwrap();
@@ -379,24 +426,24 @@ fn test_conn_send_sync() {
     fn is_send<T: Send>(_: &T) {}
     fn is_sync<T: Sync>(_: &T) {}
 
-    let source: SyncDBusSource<usize> = SyncDBusSource::new_session().unwrap();
+    let (source, _): (SyncDBusSource<usize>, _) = SyncDBusSource::new_session().unwrap();
     is_send(&source);
     is_sync(&source);
 
-    let source: DBusSource<usize> = DBusSource::new_session().unwrap();
+    let (source, _): (DBusSource<usize>, _) = DBusSource::new_session().unwrap();
     is_send(&source);
 }
 
 #[test]
 fn test_peer() {
-    let mut source: DBusSource<usize> = DBusSource::new_session().unwrap();
+    let (mut source, _): (DBusSource<usize>, _) = DBusSource::new_session().unwrap();
 
     let source_name = source.unique_name().into_static();
     use std::sync::Arc;
     let done = Arc::new(false);
     let done2 = done.clone();
     let thread = std::thread::spawn(move || {
-        let source2: DBusSource<usize> = DBusSource::new_session().unwrap();
+        let (source2, _): (DBusSource<usize>, _) = DBusSource::new_session().unwrap();
 
         let proxy = source2.with_proxy(source_name, "/", Duration::from_secs(5));
         let (signal2,): (String,) = proxy
