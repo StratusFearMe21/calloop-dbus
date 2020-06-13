@@ -1,11 +1,11 @@
 [package]
 name = "calloop-dbus"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Alexander Sieg <alex@xanderio.de>"]
 edition = "2018"
 description = "EventSource to use DBus with the calloop event loop."
 readme = "README.md"
-repository = "https://git.cyber-missile.io/xanderio/clacks"
+repository = "https://git.cyber-missile.io/xanderio/calloop-dbus"
 license = "BSD-2-Clause"
 keywords = ["eventloop", "calloop", "dbus"]
 
