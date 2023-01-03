@@ -1,7 +1,7 @@
 use calloop::{
     channel,
-    generic::{Fd, Generic},
-    {EventSource, InsertError, Interest, Mode, Poll, Readiness, Source},
+    generic::Generic,
+    PostAction, RegistrationToken, {EventSource, InsertError, Interest, Mode, Poll, Readiness},
 };
 use dbus::{
     arg::ReadAll,
@@ -24,7 +24,7 @@ use filters::Filters;
 /// A event source connection to D-Bus, non-async version where callbacks are Send but not Sync.
 pub struct DBusSource<Data: 'static> {
     conn: Connection,
-    watch: Generic<Fd>,
+    watch: Generic<i32>,
     filters: std::cell::RefCell<Filters<FilterCb<Data>>>,
     channel: channel::Channel<Message>,
 }
@@ -32,7 +32,7 @@ pub struct DBusSource<Data: 'static> {
 /// A event source conncetion to D-Bus, thread local + non-async version
 pub struct LocalDBusSource<Data: 'static> {
     conn: LocalConnection,
-    watch: Generic<Fd>,
+    watch: Generic<i32>,
     filters: std::cell::RefCell<Filters<LocalFilterCb<Data>>>,
     channel: channel::Channel<Message>,
 }
@@ -40,7 +40,7 @@ pub struct LocalDBusSource<Data: 'static> {
 /// A event source connection to D-Bus, Send + Sync + non-async version
 pub struct SyncDBusSource<Data: 'static> {
     conn: SyncConnection,
-    watch: Generic<Fd>,
+    watch: Generic<i32>,
     filters: std::sync::Mutex<Filters<SyncFilterCb<Data>>>,
     channel: std::sync::Mutex<channel::Channel<Message>>,
 }
@@ -71,9 +71,9 @@ impl<Data> $source<Data> {
         let watch_fd = channel.watch();
 
         let interest = match (watch_fd.read, watch_fd.write) {
-            (true, true) => Interest::Both,
-            (false, true) => Interest::Writable,
-            (true, false) => Interest::Readable,
+            (true, true) => Interest::BOTH,
+            (false, true) => Interest::WRITE,
+            (true, false) => Interest::READ,
             (false, false) => {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
@@ -82,7 +82,7 @@ impl<Data> $source<Data> {
             }
         };
 
-        let watch = Generic::from_fd(watch_fd.fd, interest, Mode::Level);
+        let watch = Generic::new(watch_fd.fd, interest, Mode::Level);
 
         let conn: $connection = channel.into();
 
@@ -199,7 +199,7 @@ impl<Data> $source<Data> {
         self,
         handle: calloop::LoopHandle<Data>,
         panic_on_orphan: bool,
-    ) -> Result<Source<$source<Data>>, InsertError<$source<Data>>> {
+    ) -> Result<RegistrationToken, InsertError<$source<Data>>> {
         handle.insert_source(self, move |msg, connection, data| {
             match connection.filters_mut().get_matches(&msg) {
                 Some((token, (_, callback))) => {
@@ -289,13 +289,14 @@ impl<Data> EventSource for $source<Data> {
     type Event = Message;
     type Metadata = $source<Data>;
     type Ret = Option<Token>;
+    type Error = std::io::Error;
 
     fn process_events<Callback>(
         &mut self,
         readiness: Readiness,
         token: calloop::Token,
         mut callback: Callback,
-    ) -> io::Result<()>
+    ) -> io::Result<PostAction>
     where
         Callback: FnMut(Self::Event, &mut Self::Metadata) -> Self::Ret,
     {
@@ -328,20 +329,20 @@ impl<Data> EventSource for $source<Data> {
         }
 
         self.conn.channel().flush();
-        Ok(())
+        Ok(PostAction::Continue)
     }
 
-    fn register(&mut self, poll: &mut Poll, token: calloop::Token) -> io::Result<()> {
+    fn register(&mut self, poll: &mut Poll, token: &mut calloop::TokenFactory) -> Result<(), calloop::Error> {
         self.watch.register(poll, token)
             .and_then(|_| self.channel_mut().register(poll, token))
     }
 
-    fn reregister(&mut self, poll: &mut Poll, token: calloop::Token) -> io::Result<()> {
+    fn reregister(&mut self, poll: &mut Poll, token: &mut calloop::TokenFactory) -> Result<(), calloop::Error> {
         self.watch.reregister(poll, token)
             .and_then(|_| self.channel_mut().reregister(poll, token))
     }
 
-    fn unregister(&mut self, poll: &mut Poll) -> io::Result<()> {
+    fn unregister(&mut self, poll: &mut Poll) -> Result<(), calloop::Error> {
         self.watch.unregister(poll)
             .and_then(|_| self.channel_mut().unregister(poll))
     }
