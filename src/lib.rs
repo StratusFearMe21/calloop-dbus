@@ -24,17 +24,17 @@ use filters::Filters;
 /// A event source connection to D-Bus, non-async version where callbacks are Send but not Sync.
 pub struct DBusSource<Data: 'static> {
     conn: Connection,
-    watch: Generic<i32>,
+    pub watch: Generic<i32>,
     filters: std::cell::RefCell<Filters<FilterCb<Data>>>,
-    channel: channel::Channel<Message>,
+    pub channel: channel::Channel<Message>,
 }
 
 /// A event source conncetion to D-Bus, thread local + non-async version
 pub struct LocalDBusSource<Data: 'static> {
     conn: LocalConnection,
-    watch: Generic<i32>,
+    pub watch: Generic<i32>,
     filters: std::cell::RefCell<Filters<LocalFilterCb<Data>>>,
-    channel: channel::Channel<Message>,
+    pub channel: channel::Channel<Message>,
 }
 
 /// A event source connection to D-Bus, Send + Sync + non-async version
